@@ -12,10 +12,12 @@ import {
   Volume2,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { useSoviaVoice } from '../hooks/useSoviaVoice';
 import { AI_INTEGRATION_STATUS } from '../services/aiInterfaces';
 
 export const SettingsPage: React.FC = () => {
   const { user, settings, updateSettings, deleteAllHistory } = useApp();
+  const { isSpeaking, voiceName, speak, stopSpeaking } = useSoviaVoice();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deletedBanner, setDeletedBanner] = useState(false);
 
@@ -78,9 +80,28 @@ export const SettingsPage: React.FC = () => {
 
       {/* Voice & Experience Preferences */}
       <div className="glass-panel rounded-3xl p-6 space-y-5">
-        <div className="flex items-center gap-3">
-          <Volume2 className="h-4 w-4 text-cyan-300" />
-          <h2 className="text-base font-semibold text-white">Voice & Presence</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <Volume2 className="h-4 w-4 text-cyan-300" />
+            <div>
+              <h2 className="text-base font-semibold text-white">Voice & Presence</h2>
+              <p className="text-[11px] text-slate-400">Active system voice: {voiceName}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              isSpeaking
+                ? stopSpeaking()
+                : speak(
+                    "Hey, I'm Sovia. I'm right here to listen and take this one step at a time with you.",
+                    { force: true }
+                  )
+            }
+            className="rounded-full border border-cyan-400/35 bg-cyan-400/10 px-4 py-1.5 text-xs font-medium text-cyan-200 hover:bg-cyan-400/20 transition cursor-pointer"
+          >
+            {isSpeaking ? 'Stop Voice Preview' : 'Preview Sovia Voice'}
+          </button>
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">

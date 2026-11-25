@@ -85,12 +85,12 @@ export interface MusicIntegrationService {
 }
 
 export const AI_INTEGRATION_STATUS = {
-  voiceAI: 'Simulated Demo Adapter',
-  speechRecognition: 'Demo Interactive Input',
-  voiceGeneration: 'Ambient Web Audio Synth / Visual Speech',
+  voiceAI: 'Interactive Conversational Engine (Local)',
+  speechRecognition: 'Browser SpeechRecognition + Web Audio Analyser',
+  voiceGeneration: 'Browser SpeechSynthesis TTS (Natural Voice Selection)',
   facialEmotion: 'Disabled (Opt-In Future Adapter)',
-  vocalEmotion: 'Simulated Future Adapter',
-  textEmotion: 'Rule-Based Demo Classifier',
+  vocalEmotion: 'Live Mic Level + Future Affect Adapter',
+  textEmotion: 'Rule-Based Empathy Classifier',
   persistence: 'Local Browser Storage',
 } as const;
 

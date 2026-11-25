@@ -100,11 +100,17 @@ export function selectNextQuestion(
       return null;
     }
 
-    // Stress / Overwhelmed / Unclear -> explore pressure source
+    // Stress / Overwhelmed / Unclear -> skip pressure source if already voiced in custom text
     if (
       (moodTags.has('stress') || moodTags.has('overwhelmed') || moodTags.has('unclear')) &&
       !askedIds.has('q-pressure-source')
     ) {
+      if (moodTags.has('academic') && !askedIds.has('q-academic-impact')) {
+        return ASSESSMENT_QUESTION_BANK['q-academic-impact'];
+      }
+      if (moodTags.has('work') && !askedIds.has('q-work-impact')) {
+        return ASSESSMENT_QUESTION_BANK['q-work-impact'];
+      }
       return ASSESSMENT_QUESTION_BANK['q-pressure-source'];
     }
 

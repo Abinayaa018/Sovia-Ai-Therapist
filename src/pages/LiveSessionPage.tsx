@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -11,8 +11,12 @@ import {
   Mic,
   MicOff,
   PhoneOff,
+  RotateCcw,
   Send,
   Sparkles,
+  Square,
+  Volume2,
+  VolumeX,
   Wind,
 } from 'lucide-react';
 import { AiOrb3D } from '../components/AiOrb3D';
@@ -23,6 +27,7 @@ import {
   LIVE_THERAPY_QUICK_PROMPTS,
   generateDemoTherapistReply,
 } from '../data/demoTherapy';
+import { useSoviaVoice } from '../hooks/useSoviaVoice';
 import type { ConversationTurn, OrbState, TherapyActivityType } from '../types';
 
 function formatTimer(seconds: number): string {
@@ -30,6 +35,8 @@ function formatTimer(seconds: number): string {
   const secs = seconds % 60;
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
+
+const SPEED_OPTIONS = [0.9, 1.0, 1.1];
 
 export const LiveSessionPage: React.FC = () => {
   const {
@@ -41,29 +48,122 @@ export const LiveSessionPage: React.FC = () => {
   } = useApp();
   const navigate = useNavigate();
 
-  const [orbState, setOrbState] = useState<OrbState>('speaking');
-  const [micMuted, setMicMuted] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
+  const [micEnabled, setMicEnabled] = useState(true);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [inputText, setInputText] = useState('');
   const [activeExercise, setActiveExercise] = useState<TherapyActivityType | null>(null);
   const [sessionEnded, setSessionEnded] = useState(false);
 
+  const initialGreeting = `Hey ${
+    user?.name?.split(' ')[0] ?? 'there'
+  }, I'm glad you made space for this moment. Looking at your ${wellnessReport.primaryTheme.toLowerCase()}, how is your mind feeling right now?`;
+
   const [turns, setTurns] = useState<ConversationTurn[]>([
     {
       id: 't-1',
       sender: 'ai',
-      text: `Hey ${user?.name?.split(' ')[0] ?? 'there'}, I'm glad you made space for this moment. Looking at your ${wellnessReport.primaryTheme.toLowerCase()}, how is your mind feeling right now?`,
+      text: initialGreeting,
       timestamp: 'Just now',
       emotionLabel: 'Warm & Attentive',
     },
   ]);
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const turnsRef = useRef(turns);
+  turnsRef.current = turns;
+  const elapsedRef = useRef(elapsedSeconds);
+  elapsedRef.current = elapsedSeconds;
+  const greetedRef = useRef(false);
+  const replyTimerRef = useRef<number | null>(null);
 
+  const sendUtteranceRef = useRef<(text: string) => void>(() => {});
+
+  const {
+    isSpeaking,
+    isListening,
+    isMuted,
+    recognitionSupported,
+    interimTranscript,
+    audioLevel,
+    frequencyBands,
+    micError,
+    needsAudioUnlock,
+    speak,
+    stopSpeaking,
+    replayLast,
+    startListening,
+    stopListening,
+    toggleMute,
+    clearMicError,
+  } = useSoviaVoice({
+    autoListenAfterSpeak: micEnabled && !sessionEnded,
+    onUserSpeech: (transcript) => {
+      sendUtteranceRef.current(transcript);
+    },
+  });
+
+  const sendUtterance = useCallback(
+    (text: string) => {
+      const clean = text.trim();
+      if (!clean || sessionEnded) return;
+
+      stopSpeaking();
+      stopListening();
+
+      const nowSeconds = elapsedRef.current;
+      const userTurn: ConversationTurn = {
+        id: `u-${Date.now()}`,
+        sender: 'user',
+        text: clean,
+        timestamp: formatTimer(nowSeconds),
+      };
+
+      setTurns((prev) => [...prev, userTurn]);
+      setInputText('');
+      setIsThinking(true);
+
+      const { reply, detectedTone } = generateDemoTherapistReply(
+        clean,
+        turnsRef.current.length
+      );
+
+      if (replyTimerRef.current !== null) {
+        window.clearTimeout(replyTimerRef.current);
+      }
+
+      replyTimerRef.current = window.setTimeout(() => {
+        setIsThinking(false);
+        setTurns((prev) => [
+          ...prev,
+          {
+            id: `ai-${Date.now()}`,
+            sender: 'ai',
+            text: reply,
+            timestamp: formatTimer(elapsedRef.current),
+            emotionLabel: detectedTone,
+          },
+        ]);
+        speak(reply);
+      }, 650);
+    },
+    [sessionEnded, speak, stopListening, stopSpeaking]
+  );
+
+  sendUtteranceRef.current = sendUtterance;
+
+  // Speak opening greeting automatically on mount (StrictMode-safe)
   useEffect(() => {
-    const settle = window.setTimeout(() => setOrbState('idle'), 2000);
-    return () => window.clearTimeout(settle);
-  }, []);
+    if (greetedRef.current) return;
+    greetedRef.current = true;
+    speak(initialGreeting);
+    return () => {
+      greetedRef.current = false;
+      if (replyTimerRef.current !== null) window.clearTimeout(replyTimerRef.current);
+      stopSpeaking();
+      stopListening();
+    };
+  }, [initialGreeting, speak, stopListening, stopSpeaking]);
 
   useEffect(() => {
     if (sessionEnded) return;
@@ -77,55 +177,23 @@ export const LiveSessionPage: React.FC = () => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [turns]);
 
-  const sendUtterance = (text: string) => {
-    const clean = text.trim();
-    if (!clean || sessionEnded) return;
-
-    const userTurn: ConversationTurn = {
-      id: `u-${Date.now()}`,
-      sender: 'user',
-      text: clean,
-      timestamp: formatTimer(elapsedSeconds),
-    };
-
-    setTurns((prev) => [...prev, userTurn]);
-    setInputText('');
-    setOrbState('thinking');
-
-    const { reply, detectedTone } = generateDemoTherapistReply(clean, turns.length);
-
-    window.setTimeout(() => {
-      setOrbState('speaking');
-      setTurns((prev) => [
-        ...prev,
-        {
-          id: `ai-${Date.now()}`,
-          sender: 'ai',
-          text: reply,
-          timestamp: formatTimer(elapsedSeconds + 1),
-          emotionLabel: detectedTone,
-        },
-      ]);
-
-      window.setTimeout(() => {
-        setOrbState(micMuted ? 'idle' : 'listening');
-      }, 2400);
-    }, 950);
-  };
-
-  const handleVoiceSimulate = () => {
-    if (micMuted) {
-      setMicMuted(false);
-      setOrbState('listening');
-      return;
-    }
-    setOrbState('listening');
-    if (!inputText.trim()) {
-      setInputText("I've had a lot on my mind today and I want to slow down.");
+  const handleMicToggle = () => {
+    clearMicError();
+    if (isListening) {
+      setMicEnabled(false);
+      stopListening();
+    } else {
+      setMicEnabled(true);
+      // Interrupts Sovia immediately if she is speaking
+      void startListening();
     }
   };
 
   const handleEndSession = () => {
+    stopSpeaking();
+    stopListening();
+    if (replyTimerRef.current !== null) window.clearTimeout(replyTimerRef.current);
+
     const durationMins = Math.max(1, Math.round(elapsedSeconds / 60));
     const userMessages = turns.filter((t) => t.sender === 'user');
     addSessionToHistory({
@@ -148,15 +216,30 @@ export const LiveSessionPage: React.FC = () => {
         userMessages[userMessages.length - 1]?.text ??
         'Took quiet time to pause, breathe, and check in emotionally.',
       aiSummary:
-        'DEMO SESSION SUMMARY: Conversational check-in with SOVIA focusing on emotional decompression and gentle grounding.',
+        'DEMO SESSION SUMMARY: Voice-first conversational check-in with SOVIA focusing on emotional decompression and gentle grounding.',
       highlights: [
         `Spoke through ${userMessages.length} reflection(s) with SOVIA`,
         `Session duration: ${formatTimer(elapsedSeconds)}`,
       ],
     });
     setSessionEnded(true);
-    setOrbState('idle');
   };
+
+  const cycleSpeed = () => {
+    const idx = SPEED_OPTIONS.indexOf(Number(settings.voiceSpeed.toFixed(1)));
+    const next = SPEED_OPTIONS[(idx + 1) % SPEED_OPTIONS.length];
+    updateSettings({ voiceSpeed: next });
+  };
+
+  const orbState: OrbState = isThinking
+    ? 'thinking'
+    : isListening
+      ? 'listening'
+      : isSpeaking
+        ? 'speaking'
+        : isMuted
+          ? 'muted'
+          : 'idle';
 
   const latestAiTurn = [...turns].reverse().find((t) => t.sender === 'ai');
 
@@ -172,7 +255,7 @@ export const LiveSessionPage: React.FC = () => {
 
   return (
     <div className="relative flex min-h-[calc(100vh-4rem)] flex-col justify-between pb-6">
-      {/* Top Session Telemetry Bar */}
+      {/* Top Session Telemetry & Voice Controls */}
       <div className="flex flex-wrap items-center justify-between gap-3 glass-panel-soft rounded-2xl px-4 py-3">
         <div className="flex items-center gap-3">
           <span
@@ -183,7 +266,9 @@ export const LiveSessionPage: React.FC = () => {
                   ? 'bg-cyan-400 animate-pulse'
                   : orbState === 'thinking'
                     ? 'bg-violet-400 animate-pulse'
-                    : 'bg-indigo-400'
+                    : orbState === 'muted'
+                      ? 'bg-rose-400'
+                      : 'bg-indigo-400'
             }`}
           />
           <div>
@@ -192,24 +277,71 @@ export const LiveSessionPage: React.FC = () => {
               <span className="text-cyan-300 capitalize">{orbState}</span>
             </p>
             <p className="text-[11px] text-slate-400">
-              Simulated voice companion · {wellnessReport.primaryTheme}
+              Voice-first companion · {wellnessReport.primaryTheme}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="hidden sm:flex items-center gap-2 text-xs text-slate-400">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="hidden md:flex items-center gap-2 text-xs text-slate-400 mr-1">
             <span>Progress</span>
-            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-800">
+            <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-800">
               <div
                 className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400 transition-all"
                 style={{ width: `${Math.max(8, sessionProgressPct)}%` }}
               />
             </div>
           </div>
+
           <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 font-mono text-xs text-cyan-200">
             {formatTimer(elapsedSeconds)}
           </span>
+
+          {isSpeaking && (
+            <button
+              type="button"
+              onClick={stopSpeaking}
+              className="flex items-center gap-1 rounded-full border border-amber-400/35 bg-amber-400/10 px-2.5 py-1 text-xs text-amber-200 hover:bg-amber-400/20 transition cursor-pointer"
+              title="Interrupt Sovia"
+            >
+              <Square className="h-3 w-3 fill-current" />
+              <span className="hidden sm:inline">Stop</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={replayLast}
+            className="rounded-full border border-white/10 bg-white/5 p-2 text-slate-300 hover:text-white transition cursor-pointer"
+            title="Replay last response"
+            aria-label="Replay last response"
+          >
+            <RotateCcw className="h-3.5 w-3.5 text-cyan-300" />
+          </button>
+
+          <button
+            type="button"
+            onClick={cycleSpeed}
+            className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:text-white transition cursor-pointer"
+            title="Voice speaking speed"
+          >
+            {settings.voiceSpeed.toFixed(1)}x
+          </button>
+
+          <button
+            type="button"
+            onClick={toggleMute}
+            className={`rounded-full border p-2 transition cursor-pointer ${
+              isMuted
+                ? 'border-rose-400/35 bg-rose-500/15 text-rose-300'
+                : 'border-white/10 bg-white/5 text-cyan-300 hover:text-white'
+            }`}
+            title={isMuted ? 'Unmute Sovia voice' : 'Mute Sovia voice'}
+            aria-label={isMuted ? 'Unmute Sovia voice' : 'Mute Sovia voice'}
+          >
+            {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+          </button>
+
           <button
             type="button"
             onClick={() => updateSettings({ showTranscript: !settings.showTranscript })}
@@ -258,14 +390,31 @@ export const LiveSessionPage: React.FC = () => {
         </motion.div>
       ) : (
         <div className="my-auto grid gap-6 py-4 lg:grid-cols-12 items-center">
-          {/* Central 3D Orb & Spoken Focus */}
+          {/* Central 3D Orb & Spoken Subtitles */}
           <div
             className={`flex flex-col items-center text-center ${
               settings.showTranscript ? 'lg:col-span-7' : 'lg:col-span-12'
             }`}
           >
-            <AiOrb3D state={orbState} size="hero" />
-            <VoiceWaveform state={orbState} bars={30} className="mt-1" />
+            <AiOrb3D state={orbState} audioLevel={audioLevel} size="hero" />
+            <VoiceWaveform
+              state={orbState}
+              audioLevel={audioLevel}
+              frequencyBands={frequencyBands}
+              bars={30}
+              className="mt-1"
+            />
+
+            {needsAudioUnlock && (
+              <button
+                type="button"
+                onClick={replayLast}
+                className="mt-3 flex items-center gap-2 rounded-full border border-cyan-400/40 bg-cyan-400/15 px-4 py-1.5 text-xs font-medium text-cyan-200 cursor-pointer"
+              >
+                <Volume2 className="h-3.5 w-3.5" />
+                <span>Tap to hear Sovia speak</span>
+              </button>
+            )}
 
             <AnimatePresence mode="wait">
               {latestAiTurn && (
@@ -287,6 +436,26 @@ export const LiveSessionPage: React.FC = () => {
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* Live Recognized Speech Subtitle */}
+            {interimTranscript && (
+              <p className="mt-3 rounded-2xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-1.5 text-xs text-cyan-100">
+                Hearing: "{interimTranscript}..."
+              </p>
+            )}
+
+            {micError && (
+              <p className="mt-3 max-w-lg rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-200">
+                {micError}
+              </p>
+            )}
+
+            {!recognitionSupported && !micError && (
+              <p className="mt-3 text-[11px] text-slate-400">
+                Live speech recognition is unsupported in this browser—Sovia still speaks aloud,
+                and you can type or tap a prompt below.
+              </p>
+            )}
 
             {/* Quick Sample Prompts */}
             <div className="mt-4 flex flex-wrap justify-center gap-2 max-w-xl">
@@ -310,7 +479,7 @@ export const LiveSessionPage: React.FC = () => {
                 <span className="text-xs font-semibold uppercase tracking-wider text-slate-300">
                   Live Transcript
                 </span>
-                <span className="text-[10px] text-slate-500">Demo Conversation</span>
+                <span className="text-[10px] text-slate-500">Voice Conversation</span>
               </div>
 
               <div className="mt-3 flex-1 space-y-3 overflow-y-auto pr-1">
@@ -342,10 +511,9 @@ export const LiveSessionPage: React.FC = () => {
         </div>
       )}
 
-      {/* Bottom Controls: Activities + Input + Mic + End Session */}
+      {/* Bottom Controls: Activities + Real Mic + Text Alternative + End Session */}
       {!sessionEnded && (
         <div className="space-y-3">
-          {/* In-session Wellness Activities */}
           <div className="flex flex-wrap items-center justify-center gap-2">
             {exerciseButtons.map((btn) => {
               const Icon = btn.icon;
@@ -363,7 +531,6 @@ export const LiveSessionPage: React.FC = () => {
             })}
           </div>
 
-          {/* Primary Interaction Bar */}
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -373,27 +540,32 @@ export const LiveSessionPage: React.FC = () => {
           >
             <button
               type="button"
-              onClick={() => setMicMuted((m) => !m)}
-              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition cursor-pointer ${
-                micMuted
-                  ? 'bg-rose-500/20 text-rose-300 border border-rose-400/30'
-                  : 'bg-cyan-400/20 text-cyan-300 border border-cyan-400/35'
+              onClick={handleMicToggle}
+              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition cursor-pointer ${
+                isListening
+                  ? 'bg-cyan-400 text-slate-950 shadow-[0_0_24px_rgba(56,189,248,0.65)] animate-pulse'
+                  : 'bg-indigo-500/25 text-cyan-200 border border-indigo-400/35 hover:bg-cyan-400/25'
               }`}
-              title={micMuted ? 'Unmute microphone' : 'Mute microphone'}
-              aria-label={micMuted ? 'Unmute microphone' : 'Mute microphone'}
+              title={
+                isListening
+                  ? 'Listening — click to stop microphone'
+                  : isSpeaking
+                    ? 'Interrupt Sovia and speak'
+                    : 'Enable microphone and speak'
+              }
+              aria-label={isListening ? 'Stop microphone' : 'Start microphone'}
             >
-              {micMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+              {isListening ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
             </button>
 
             <input
               type="text"
-              value={inputText}
+              value={interimTranscript || inputText}
               onChange={(e) => setInputText(e.target.value)}
-              onFocus={handleVoiceSimulate}
               placeholder={
-                micMuted
-                  ? 'Microphone muted — type to speak with SOVIA...'
-                  : 'Share what is on your mind, or tap a prompt above...'
+                isListening
+                  ? 'Listening... speak naturally into your microphone'
+                  : 'Tap the mic to speak, or type a message...'
               }
               className="flex-1 bg-transparent px-2 text-sm text-white placeholder:text-slate-500 focus:outline-none"
             />
@@ -427,4 +599,3 @@ export const LiveSessionPage: React.FC = () => {
     </div>
   );
 };
-

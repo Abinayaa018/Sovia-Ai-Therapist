@@ -1,4 +1,4 @@
-export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
+export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'muted';
 
 export type AssessmentDimension =
   | 'emotional_state'

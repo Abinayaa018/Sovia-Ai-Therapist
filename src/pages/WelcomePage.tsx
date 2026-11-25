@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowRight,
   Captions,
   CaptionsOff,
+  RotateCcw,
+  Square,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -12,8 +14,7 @@ import { AiOrb3D } from '../components/AiOrb3D';
 import { AmbientBackdrop } from '../components/AmbientBackdrop';
 import { VoiceWaveform } from '../components/VoiceWaveform';
 import { useApp } from '../context/AppContext';
-import { MUSIC_LIBRARY } from '../data/musicLibrary';
-import { ambientAudio } from '../engine/ambientAudio';
+import { useSoviaVoice } from '../hooks/useSoviaVoice';
 import type { OrbState } from '../types';
 
 const WELCOME_LINES = [
@@ -23,47 +24,78 @@ const WELCOME_LINES = [
   "You deserve to feel better. And we're going to take this one step at a time.",
 ];
 
+const WELCOME_SPEECH = WELCOME_LINES.join(' ');
+const SPEED_OPTIONS = [0.9, 1.0, 1.1];
+
 export const WelcomePage: React.FC = () => {
   const { user, settings, updateSettings, markWelcomeSeen } = useApp();
   const navigate = useNavigate();
 
   const [visibleLines, setVisibleLines] = useState(1);
-  const [orbState, setOrbState] = useState<OrbState>('speaking');
+  const startedRef = useRef(false);
 
+  const {
+    isSpeaking,
+    isMuted,
+    audioLevel,
+    frequencyBands,
+    needsAudioUnlock,
+    speak,
+    stopSpeaking,
+    replayLast,
+    toggleMute,
+  } = useSoviaVoice({
+    onSentenceStart: (idx) => {
+      setVisibleLines((prev) => Math.max(prev, Math.min(WELCOME_LINES.length, idx + 1)));
+    },
+  });
+
+  // Trigger audible welcome speech on mount (StrictMode-safe)
   useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    speak(WELCOME_SPEECH);
+    return () => {
+      startedRef.current = false;
+      stopSpeaking();
+    };
+  }, [speak, stopSpeaking]);
+
+  // If muted or browser blocked autoplay before gesture, reveal lines smoothly
+  useEffect(() => {
+    if (!isMuted && !needsAudioUnlock) return;
     const timers: number[] = [];
     WELCOME_LINES.forEach((_, idx) => {
       if (idx === 0) return;
-      const t = window.setTimeout(() => {
-        setVisibleLines(idx + 1);
-      }, idx * 2300);
-      timers.push(t);
+      timers.push(
+        window.setTimeout(() => {
+          setVisibleLines((prev) => Math.max(prev, idx + 1));
+        }, idx * 1800)
+      );
     });
-
-    const settleTimer = window.setTimeout(() => {
-      setOrbState('listening');
-    }, WELCOME_LINES.length * 2300 + 600);
-    timers.push(settleTimer);
-
     return () => timers.forEach((t) => window.clearTimeout(t));
-  }, []);
+  }, [isMuted, needsAudioUnlock]);
 
-  const toggleSound = () => {
-    const next = !settings.soundEnabled;
-    updateSettings({ soundEnabled: next });
-    if (next) {
-      ambientAudio.startTrack(MUSIC_LIBRARY[0], 0.35);
-    } else {
-      ambientAudio.pause();
-    }
+  const orbState: OrbState = isMuted
+    ? 'muted'
+    : isSpeaking
+      ? 'speaking'
+      : 'idle';
+
+  const cycleSpeed = () => {
+    const idx = SPEED_OPTIONS.indexOf(Number(settings.voiceSpeed.toFixed(1)));
+    const next = SPEED_OPTIONS[(idx + 1) % SPEED_OPTIONS.length];
+    updateSettings({ voiceSpeed: next });
   };
 
   const handleStartSession = () => {
+    stopSpeaking();
     markWelcomeSeen();
     navigate('/assessment');
   };
 
   const handleSkipToDashboard = () => {
+    stopSpeaking();
     markWelcomeSeen();
     navigate('/dashboard');
   };
@@ -73,15 +105,57 @@ export const WelcomePage: React.FC = () => {
       <AmbientBackdrop intensity="cinematic" />
 
       {/* Top Controls */}
-      <header className="relative z-10 mx-auto flex w-full max-w-5xl items-center justify-between">
+      <header className="relative z-10 mx-auto flex w-full max-w-5xl items-center justify-between gap-2">
         <div className="flex items-center gap-2.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_12px_#38bdf8]" />
+          <span
+            className={`h-2.5 w-2.5 rounded-full ${
+              isMuted
+                ? 'bg-rose-400'
+                : isSpeaking
+                  ? 'bg-cyan-400 animate-pulse shadow-[0_0_12px_#38bdf8]'
+                  : 'bg-indigo-400'
+            }`}
+          />
           <span className="text-xs font-medium uppercase tracking-[0.22em] text-slate-300">
-            SOVIA · {orbState === 'speaking' ? 'Speaking' : 'Listening'}
+            SOVIA · {isMuted ? 'Muted' : isSpeaking ? 'Speaking' : 'Ready'}
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {isSpeaking && (
+            <button
+              type="button"
+              onClick={stopSpeaking}
+              className="flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs text-amber-200 hover:bg-amber-400/20 transition cursor-pointer"
+              title="Stop speaking"
+            >
+              <Square className="h-3 w-3 fill-current" />
+              <span className="hidden sm:inline">Stop</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setVisibleLines(1);
+              replayLast();
+            }}
+            className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-slate-200 hover:border-cyan-400/40 transition cursor-pointer"
+            title="Replay welcome"
+          >
+            <RotateCcw className="h-3.5 w-3.5 text-cyan-300" />
+            <span className="hidden sm:inline">Replay</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={cycleSpeed}
+            className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-slate-200 hover:border-cyan-400/40 transition cursor-pointer"
+            title="Voice speed"
+          >
+            {settings.voiceSpeed.toFixed(1)}x
+          </button>
+
           <button
             type="button"
             onClick={() => updateSettings({ showTranscript: !settings.showTranscript })}
@@ -93,23 +167,25 @@ export const WelcomePage: React.FC = () => {
               <CaptionsOff className="h-3.5 w-3.5 text-slate-400" />
             )}
             <span className="hidden sm:inline">
-              {settings.showTranscript ? 'Transcript On' : 'Transcript Off'}
+              {settings.showTranscript ? 'Subtitles On' : 'Subtitles Off'}
             </span>
           </button>
 
           <button
             type="button"
-            onClick={toggleSound}
-            className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-1.5 text-xs text-slate-200 hover:border-cyan-400/40 transition cursor-pointer"
+            onClick={toggleMute}
+            className={`flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs transition cursor-pointer ${
+              isMuted
+                ? 'border-rose-400/35 bg-rose-500/15 text-rose-200'
+                : 'border-white/10 bg-white/[0.04] text-slate-200 hover:border-cyan-400/40'
+            }`}
           >
-            {settings.soundEnabled ? (
-              <Volume2 className="h-3.5 w-3.5 text-cyan-300" />
+            {isMuted ? (
+              <VolumeX className="h-3.5 w-3.5 text-rose-300" />
             ) : (
-              <VolumeX className="h-3.5 w-3.5 text-slate-400" />
+              <Volume2 className="h-3.5 w-3.5 text-cyan-300" />
             )}
-            <span className="hidden sm:inline">
-              {settings.soundEnabled ? 'Sound On' : 'Muted'}
-            </span>
+            <span className="hidden sm:inline">{isMuted ? 'Voice Muted' : 'Voice On'}</span>
           </button>
         </div>
       </header>
@@ -126,13 +202,32 @@ export const WelcomePage: React.FC = () => {
           </motion.p>
         )}
 
-        <AiOrb3D state={orbState} size="hero" />
+        <AiOrb3D state={orbState} audioLevel={audioLevel} size="hero" />
 
         <div className="mt-1">
-          <VoiceWaveform state={orbState} bars={28} />
+          <VoiceWaveform
+            state={orbState}
+            audioLevel={audioLevel}
+            frequencyBands={frequencyBands}
+            bars={28}
+          />
         </div>
 
-        {/* Progressive Spoken Transcript */}
+        {needsAudioUnlock && (
+          <button
+            type="button"
+            onClick={() => {
+              setVisibleLines(1);
+              speak(WELCOME_SPEECH, { force: true });
+            }}
+            className="mt-3 flex items-center gap-2 rounded-full border border-cyan-400/40 bg-cyan-400/15 px-4 py-1.5 text-xs font-medium text-cyan-200 hover:bg-cyan-400/25 transition cursor-pointer"
+          >
+            <Volume2 className="h-3.5 w-3.5" />
+            <span>Tap to hear Sovia speak</span>
+          </button>
+        )}
+
+        {/* Progressive Spoken Subtitles */}
         <AnimatePresence>
           {settings.showTranscript && (
             <motion.div
@@ -146,7 +241,7 @@ export const WelcomePage: React.FC = () => {
                   key={index}
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.7 }}
+                  transition={{ duration: 0.55 }}
                   className={`text-base sm:text-lg leading-relaxed ${
                     index === visibleLines - 1 ? 'text-white font-medium' : 'text-slate-300/90'
                   }`}
@@ -162,7 +257,7 @@ export const WelcomePage: React.FC = () => {
         <motion.div
           initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.8 }}
+          transition={{ delay: 0.6 }}
           className="mt-8 flex flex-col sm:flex-row items-center gap-4"
         >
           <motion.button
@@ -187,9 +282,8 @@ export const WelcomePage: React.FC = () => {
       </main>
 
       <footer className="relative z-10 text-center text-[11px] text-slate-500">
-        Simulated voice presence · Take your time—everything moves at your pace.
+        Live browser voice synthesis · Take your time—everything moves at your pace.
       </footer>
     </div>
   );
 };
-
